@@ -1,0 +1,127 @@
+#pragma kernel CSMain
+
+RWTexture2D<float4> Destination;
+
+float4x4 _CameraToWorld;
+float4x4 _CameraInverseProjection;
+
+float3 espace;
+int iteration;
+float time;
+
+
+float epsilon = 0.0002f;
+static const float maxDst = 3;
+static const int maxStepCount = 640;
+
+struct Ray
+{
+    float3 origin;
+    float3 direction;
+};
+
+Ray CreateRay(float3 origin, float3 direction)
+{
+    Ray ray;
+    ray.origin = origin;
+    ray.direction = direction;
+    return ray;
+}
+
+Ray CreateCameraRay(float2 uv)
+{
+    float3 origin = mul(_CameraToWorld, float4(0, 0, 0, 1)).xyz;
+    float3 direction = mul(_CameraInverseProjection, float4(uv, 0, 1)).xyz;
+    direction = mul(_CameraToWorld, float4(direction, 0)).xyz;
+    direction = normalize(direction);
+    return CreateRay(origin, direction);
+}
+
+float2 mandelbroot(float3 pos)
+{
+    float Power = (tan(sqrt(time / 30.0)));
+    float3 z = pos;
+    float dr = 1.0;
+    float r = 0.0;
+    for (int i = 0; i < iteration; i++) {
+        r = length(z);
+        if (r > maxDst) break;
+
+        // convert to polar coordinates
+        float theta = acos(z.z / r);
+        float phi = atan2(z.y, z.x);
+        dr = pow(r, Power - 1.0) * Power * dr + 1.0;
+
+        // scale and rotate the point
+        float zr = pow(r, Power);
+        theta = theta * Power;
+        phi = phi * Power;
+
+        // convert back to cartesian coordinates
+        z = zr * float3(sin(theta) * cos(phi), sin(phi) * sin(theta), cos(theta));
+        z += pos;
+    }
+    return float2(0.6*0.5 * log(r) * r / dr, 0*50.0 * pow(abs(dr), 0.128 / float(iteration)));
+}
+
+
+float2 DE(float3 position)
+{
+    return mandelbroot(position);
+    float3 delta = (abs(position - float3(0, 0, 3)) + espace * 0.5f) % espace - espace * 0.5f;
+    return float2(length(delta)-1.0f,0.0f);
+}
+
+float3 cosineColor(float t, float3 a, float3 b, float3 c, float3 d)
+{
+    return a + b * cos(6.28318 * (c * t + d));
+}
+
+float3 palette(float t)
+{
+    return cosineColor(t, float3(0.1+0.3*cos(0.1*time), 0.3, 0.4*sin(0.1*time)), float3(0.2, 0.5, 0.8), float3(0.01, 0.01, 0.01), float3(0.00, 0.15, 0.20));
+}
+
+float4 result(float2 uv)
+{
+    // Raymarching:
+    Ray ray = CreateCameraRay(uv * 2 - 1);
+    float rayDst = 0;
+    int marchSteps = 0;
+    float t = 0, c = 0;
+    float4 r = float4(0, 0, 0, 0);
+    while (rayDst < maxDst && marchSteps < maxStepCount)
+    {
+        marchSteps++;
+        float2 sceneInfo = DE(ray.origin);
+        float dst = sceneInfo.x;
+        t += (dst) * marchSteps+ marchSteps*0.003;
+        c += sceneInfo.y;
+        // Ray has hit a surface
+        if (dst <= epsilon)
+        {
+            // change color
+            float fog = 1.0 / (1.0 + t * t * 0.02);
+            float3 color = palette(c) * fog;
+            r = float4(color, 1);
+            break;
+        }
+        ray.origin += ray.direction * dst;
+        rayDst += dst;
+    }
+    return r;
+}
+
+[numthreads(8,8,1)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+    epsilon = 0.0001f ;
+    uint width,height;
+    Destination.GetDimensions(width, height);
+
+    float2 uv1 = (id.xy) / float2(width,height);
+
+    float4 r1 = result(uv1);
+
+    Destination[id.xy] = r1;
+}
